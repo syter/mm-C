@@ -12,7 +12,7 @@ static func think(sim: BattleSim, id: int, rng: RandomNumberGenerator) -> Dictio
 	var target: BattleSim.Fighter = null
 	var best: float = INF
 	for f: BattleSim.Fighter in sim.fighters.values():
-		if f.id == id or not f.alive:
+		if f.team == me.team or not f.alive:
 			continue
 		var d: float = me.pos.distance_to(f.pos)
 		if d < best:
@@ -26,7 +26,7 @@ static func think(sim: BattleSim, id: int, rng: RandomNumberGenerator) -> Dictio
 	var their_reach: float = sim.hit_dist(target)
 	var dir: Vector2 = to.normalized()
 	var mv: Vector2
-	if my_reach > their_reach + 8.0 and best < their_reach + 14.0:
+	if my_reach > their_reach + BattleSim.BODY_R * 1.3 and best < their_reach + BattleSim.BODY_R * 2.3:
 		mv = -dir  # 对面手短，拉开
 	elif best > my_reach * 0.8:
 		mv = dir

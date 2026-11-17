@@ -12,16 +12,21 @@ extends Node
 signal phase_changed(phase: int)
 signal lobby_changed
 signal draft_changed
+signal mode_changed
 signal battle_started
 signal battle_ended(winner_id: int)
 signal net_error(msg: String)
+## 战斗特效/音效事件：swings = [出手者 id]，hits = [{attacker, target, damage, killed}]
+signal fx(swings: Array, hits: Array)
 
-enum Phase { MENU, LOBBY, DRAFT, BATTLE, RESULT }
+enum Phase { MENU, LOBBY, DRAFT, MODE, BATTLE, RESULT }
 
 const DEFAULT_PORT: int = 24680
-const MAX_PLAYERS: int = 8
+## 一局最多几人（真人 + 机器人一起算）。2026-11-17 定为 5
+const MAX_PLAYERS: int = 5
 const DRAFT_TIME: float = 20.0
 const RESULT_TIME: float = 5.0
+const MODE_TIME: float = 30.0
 ## 每几个物理帧广播一次快照（60fps / 2 = 30Hz）
 const SNAP_EVERY: int = 2
 
@@ -31,6 +36,12 @@ var my_name: String = "玩家"
 var players: Dictionary = {}
 ## {order: [id], weapons: [wid], taken: [id 或 0], turn: int, time_left: float}
 var draft: Dictionary = {}
+## 模式选择：{chooser: id, time_left: float}。最后一个选武器的人决定模式和分队
+var mode_pick: Dictionary = {}
+## 本局模式：{k: 0 = 各自为战 / k = 少的一边几个人, side_a: [id]}（side_a 是 A 队成员）
+var match_mode: Dictionary = {"k": 0, "side_a": []}
+## 测试用：机器人 / autoplay 当选模式的人时强制选这个 k（-1 = 随机）
+var force_mode: int = -1
 var sim: BattleSim = null
 var last_winner: int = 0
 ## 本地玩家输入，由 Arena 每帧写入
@@ -46,6 +57,7 @@ var _last_seq: Dictionary = {}  # id -> 上次处理过的攻击序号
 var _next_bot_id: int = -1
 var _frame: int = 0
 var _timer: float = 0.0
+var _auto_sent: String = ""  # 客户端 autoplay 防止同一个回合重复发请求
 
 
 func _ready() -> void:
@@ -69,7 +81,7 @@ func my_id() -> int:
 
 func host(port: int = DEFAULT_PORT) -> bool:
 	var peer := ENetMultiplayerPeer.new()
-	var err: Error = peer.create_server(port, MAX_PLAYERS)
+	var err: Error = peer.create_server(port, MAX_PLAYERS - 1)  # 参数是「客户端」上限，主机自己不算
 	if err != OK:
 		net_error.emit("开主机失败（端口 %d 被占用？）" % port)
 		return false
@@ -120,6 +132,13 @@ func _on_peer_disconnected(id: int) -> void:
 	match phase:
 		Phase.DRAFT:
 			_draft_remove(id)
+		Phase.MODE:
+			if players.size() < 2:
+				_back_to_lobby()
+			elif id == mode_pick.get("chooser", 0):
+				_start_battle_server({"k": 0, "side_a": []})  # 决定的人跑了，直接各自为战
+			else:
+				_sync_mode.rpc(mode_pick)
 		Phase.BATTLE:
 			sim.kill(id)
 	_sync_lobby.rpc(players)
@@ -237,7 +256,7 @@ func _advance_draft() -> void:
 	draft["time_left"] = _timer
 	_sync_draft.rpc(draft)
 	if current_picker() == 0:
-		_start_battle_server()
+		_enter_mode_phase()
 
 
 func _draft_remove(id: int) -> void:
@@ -272,19 +291,113 @@ func _auto_pick(pid: int) -> void:
 
 # ============ 战斗 ============
 
-func _start_battle_server() -> void:
+# ============ 模式选择 ============
+## 最后一个选武器的人，在所有人选完之后决定：各自为战，或 k v 其余（k = 1 .. 人数/2），并且自己分队。
+
+## 本局参战的人（选到了武器、还在线）
+func fighters_in_draft() -> Array:
+	var out: Array = []
+	for i in draft["taken"].size():
+		var pid: int = draft["taken"][i]
+		if pid != 0 and players.has(pid):
+			out.append(pid)
+	return out
+
+
+## 可选的 k：0 = 各自为战，1..n/2 = k v (n-k)
+func mode_options() -> Array[int]:
+	var n: int = fighters_in_draft().size()
+	var out: Array[int] = [0]
+	for k in range(1, n / 2 + 1):
+		if not (n == 2 and k == 1):  # 两个人的 1v1 就是各自为战
+			out.append(k)
+	return out
+
+
+func mode_name(k: int, n: int) -> String:
+	return "各自为战" if k == 0 else "%dv%d" % [k, n - k]
+
+
+func _enter_mode_phase() -> void:
+	if mode_options().size() <= 1:
+		_start_battle_server({"k": 0, "side_a": []})  # 只有两个人，没得选
+		return
+	mode_pick = {"chooser": draft["order"].back(), "time_left": MODE_TIME}
+	_timer = MODE_TIME
+	_sync_mode.rpc(mode_pick)
+	_set_phase.rpc(Phase.MODE)
+
+
+@rpc("authority", "call_local", "reliable")
+func _sync_mode(d: Dictionary) -> void:
+	mode_pick = d
+	mode_changed.emit()
+
+
+## 本地玩家（必须是决定的人）提交模式和 A 队名单
+func choose_mode(k: int, side_a: Array) -> void:
+	if is_server():
+		_do_choose_mode(1, k, side_a)
+	else:
+		_request_mode.rpc_id(1, k, side_a)
+
+
+@rpc("any_peer", "reliable")
+func _request_mode(k: int, side_a: Array) -> void:
+	if is_server():
+		_do_choose_mode(multiplayer.get_remote_sender_id(), k, side_a)
+
+
+func _do_choose_mode(pid: int, k: int, side_a: Array) -> void:
+	if phase != Phase.MODE or pid != mode_pick.get("chooser", 0):
+		return
+	if not mode_options().has(k):
+		return
+	var alive: Array = fighters_in_draft()
+	var clean: Array = []
+	for id: int in side_a:
+		if alive.has(id) and not clean.has(id):
+			clean.append(id)
+	if k > 0 and clean.size() != k:
+		return
+	_start_battle_server({"k": k, "side_a": clean if k > 0 else []})
+
+
+## 机器人 / 超时：随机模式 + 随机分队（超时的真人默认各自为战）
+func _auto_mode(random_mode: bool) -> Dictionary:
+	var opts: Array[int] = mode_options()
+	var k: int = 0
+	if force_mode >= 0 and opts.has(force_mode):
+		k = force_mode
+	elif random_mode:
+		k = opts[rng.randi_range(0, opts.size() - 1)]
+	var ids: Array = fighters_in_draft()
+	Weapons._shuffle(ids, rng)
+	return {"k": k, "side_a": ids.slice(0, k)}
+
+
+# ============ 战斗 ============
+
+func _start_battle_server(mode: Dictionary) -> void:
+	match_mode = mode
+	var k: int = mode["k"]
 	var entries: Array = []
 	for i in draft["taken"].size():
 		var pid: int = draft["taken"][i]
 		if pid != 0 and players.has(pid):
-			entries.append({"id": pid, "name": players[pid]["name"], "weapon": draft["weapons"][i]})
+			var e: Dictionary = {"id": pid, "name": players[pid]["name"], "weapon": draft["weapons"][i]}
+			if k > 0:
+				e["team"] = 0 if mode["side_a"].has(pid) else 1
+			entries.append(e)
 	_inputs.clear()
 	_last_seq.clear()
-	_start_battle.rpc(entries, rng.randi())
+	_start_battle.rpc(entries, rng.randi(), mode)
 
 
 @rpc("authority", "call_local", "reliable")
-func _start_battle(entries: Array, seed_v: int) -> void:
+func _start_battle(entries: Array, seed_v: int, mode: Dictionary) -> void:
+	match_mode = mode
+	_auto_sent = ""
 	var r := RandomNumberGenerator.new()
 	r.seed = seed_v
 	sim = BattleSim.new()
@@ -305,6 +418,11 @@ func _client_input(mv: Vector2, aim: float, held: bool, seq: int) -> void:
 func _snapshot(arr: Array) -> void:
 	if sim != null and phase == Phase.BATTLE:
 		sim.apply_snapshot(arr)
+
+
+@rpc("authority", "call_local", "reliable")
+func _fx(swings: Array, hits: Array) -> void:
+	fx.emit(swings, hits)
 
 
 @rpc("authority", "call_local", "reliable")
@@ -332,6 +450,9 @@ func _physics_process(dt: float) -> void:
 			local_input["aim"] = b["aim"]
 			local_input["held"] = b["attack"]
 
+	if autoplay and not is_server():
+		_client_autoplay_choices()
+
 	if not is_server():
 		if phase == Phase.BATTLE:
 			_client_input.rpc_id(1, local_input["move"], local_input["aim"], local_input["held"], local_input["seq"])
@@ -347,12 +468,37 @@ func _physics_process(dt: float) -> void:
 				_timer -= dt
 				if _timer <= 0.0 and cur != 0:
 					_auto_pick(cur)  # 超时随机选
+		Phase.MODE:
+			var ch: int = mode_pick.get("chooser", 0)
+			if players.get(ch, {}).get("bot", false) or (ch == 1 and autoplay):
+				_start_battle_server(_auto_mode(true))
+			else:
+				_timer -= dt
+				if _timer <= 0.0:
+					_start_battle_server({"k": 0, "side_a": []})  # 超时：各自为战
 		Phase.BATTLE:
 			_tick_battle(dt)
 		Phase.RESULT:
 			_timer -= dt
 			if _timer <= 0.0:
 				_back_to_lobby()
+
+
+## 客户端 autoplay（测试用）：轮到自己就立刻选武器 / 选模式
+func _client_autoplay_choices() -> void:
+	if phase == Phase.DRAFT and current_picker() == my_id():
+		var key: String = "d%d" % draft["turn"]
+		if _auto_sent != key:
+			_auto_sent = key
+			var free: Array[int] = []
+			for i in draft["taken"].size():
+				if draft["taken"][i] == 0:
+					free.append(i)
+			pick(free[rng.randi_range(0, free.size() - 1)])
+	elif phase == Phase.MODE and mode_pick.get("chooser", 0) == my_id() and _auto_sent != "m":
+		_auto_sent = "m"
+		var m: Dictionary = _auto_mode(true)
+		choose_mode(m["k"], m["side_a"])
 
 
 func _tick_battle(dt: float) -> void:
@@ -370,6 +516,9 @@ func _tick_battle(dt: float) -> void:
 		_last_seq[id] = seq
 		inputs[id] = {"move": raw["move"], "aim": raw["aim"], "attack": raw["held"] or clicked}
 	sim.step(dt, inputs)
+	if not sim.swings.is_empty() or not sim.events.is_empty():
+		# 音效事件走可靠通道：一秒顶多几次，丢了会很明显（砍到人没声音）
+		_fx.rpc(Array(sim.swings), Array(sim.events))
 	if _frame % SNAP_EVERY == 0:
 		_snapshot.rpc(sim.snapshot())
 	if sim.is_over():

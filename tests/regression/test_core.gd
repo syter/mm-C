@@ -34,6 +34,12 @@ func _initialize() -> void:
 	var b: BattleSim.Fighter = sim.fighters[2]
 	check(is_equal_approx(sim.move_speed(a) / sim.move_speed(b), 150.0 / 70.0), "匕首 150 / 铁鞭 70 速度比")
 
+	print("[尺寸三件套等比]")
+	# 身体 / 范围单位 / 移速 必须一起缩放，比例变了平衡就变了（基准是 v0.1 的 6 / 20 / 1.2）
+	check(is_equal_approx(BattleSim.UNIT_PX / BattleSim.BODY_R, 20.0 / 6.0), "范围单位 : 身体 比例不变")
+	check(is_equal_approx(BattleSim.SPEED_PX / BattleSim.BODY_R, 1.2 / 6.0), "移速 : 身体 比例不变")
+	check(BattleSim.MARGIN >= BattleSim.BODY_R, "边界留白 ≥ 身体半径")
+
 	print("[命中判定]")
 	a.pos = Vector2(100, 100)
 	a.aim = 0.0
@@ -41,18 +47,21 @@ func _initialize() -> void:
 	check(sim.can_hit(a, b), "射程内正前方能打中")
 	b.pos = Vector2(100 + sim.hit_dist(a) + 2.0, 100)
 	check(not sim.can_hit(a, b), "射程外打不中")
-	b.pos = Vector2(100 - 20, 100)
+	b.pos = Vector2(100 - 40, 100)
 	check(not sim.can_hit(a, b), "背后打不中")
 
 	print("[伤害与击杀]")
 	b.pos = Vector2(115, 100)
 	sim.step(0.016, {1: {"move": Vector2.ZERO, "aim": 0.0, "attack": true}})
-	check(b.hp == 30, "匕首一刀 70")
+	check(b.hp == 55, "匕首一刀 45")
 	sim.step(0.016, {1: {"move": Vector2.ZERO, "aim": 0.0, "attack": true}})
-	check(b.hp == 30, "冷却中不能连砍")
-	for i in 70:  # 匕首间隔 1 秒
+	check(b.hp == 55, "冷却中不能连砍")
+	for i in 35:  # 匕首间隔 0.5 秒
 		sim.step(0.016, {1: {"move": Vector2.ZERO, "aim": 0.0, "attack": true}})
-	check(not b.alive and a.kills == 1, "第二刀击杀")
+	check(b.alive and b.hp == 10, "第二刀还活着（10 血）")
+	for i in 35:
+		sim.step(0.016, {1: {"move": Vector2.ZERO, "aim": 0.0, "attack": true}})
+	check(not b.alive and a.kills == 1, "第三刀击杀")
 	check(sim.is_over() and sim.winner_id() == 1, "只剩一人时结束")
 
 	print("[同帧互砍]")
@@ -61,10 +70,59 @@ func _initialize() -> void:
 	b = sim.fighters[2]
 	a.pos = Vector2(100, 100)
 	b.pos = Vector2(115, 100)
-	a.hp = 50
-	b.hp = 50
+	a.hp = 40
+	b.hp = 40
 	sim.step(0.016, {1: {"aim": 0.0, "attack": true}, 2: {"aim": PI, "attack": true}})
 	check(not a.alive and not b.alive and sim.winner_id() == 0, "同归于尽 → 平局")
+
+	print("[平衡约束：所有武器都是 3 下杀，混着打也一样]")
+	var dmgs: Array[int] = []
+	for wid: String in Weapons.POOL:
+		dmgs.append(int(Weapons.get_def(wid)["damage"]))
+	check(dmgs.max() * 2 < BattleSim.BASE_HP, "任意两下都杀不死（最大伤害 ×2 < 100）")
+	check(dmgs.min() * 3 >= BattleSim.BASE_HP, "任意三下必杀（最小伤害 ×3 ≥ 100）")
+
+	print("[分队：不打队友]")
+	var ts := BattleSim.new()
+	ts.setup([{"id": 1, "name": "a", "weapon": "whip", "team": 0}, {"id": 2, "name": "b", "weapon": "dagger", "team": 0},
+		{"id": 3, "name": "c", "weapon": "spear", "team": 1}], rng)
+	var t1: BattleSim.Fighter = ts.fighters[1]
+	var t2: BattleSim.Fighter = ts.fighters[2]
+	var t3: BattleSim.Fighter = ts.fighters[3]
+	t1.pos = Vector2(200, 180)
+	t2.pos = Vector2(250, 180)
+	t3.pos = Vector2(260, 200)
+	ts.step(0.016, {1: {"aim": 0.0, "attack": true}})
+	check(t2.hp == 100 and t2.kb == Vector2.ZERO, "铁鞭扫到队友：不掉血、不被击退")
+	check(t3.hp == 66, "同一下扫到敌人：照常掉血")
+	check(not ts.is_over(), "两队都还有人：没结束")
+	ts.kill(3)
+	check(ts.is_over() and ts.fighters[ts.winner_id()].team == 0, "敌队全灭：我方队伍获胜（两人都活着也算结束）")
+
+	print("[击退]")
+	for wid: String in Weapons.POOL:
+		var ks := BattleSim.new()
+		ks.setup([{"id": 1, "name": "a", "weapon": wid}, {"id": 2, "name": "b", "weapon": "dagger"}], rng)
+		var ka: BattleSim.Fighter = ks.fighters[1]
+		var kt: BattleSim.Fighter = ks.fighters[2]
+		ka.pos = Vector2(200, 180)
+		ka.aim = 0.0
+		kt.pos = Vector2(200 + BattleSim.BODY_R * 2.0 + 4.0, 180)
+		var start_x: float = kt.pos.x
+		ks.step(1.0 / 60.0, {1: {"aim": 0.0, "attack": true}})
+		for i in 60:
+			ks.step(1.0 / 60.0, {})
+		var want: float = float(Weapons.get_def(wid)["knockback"]) * BattleSim.UNIT_PX
+		var got: float = kt.pos.x - start_x
+		check(absf(got - want) < 1.0 and absf(kt.pos.y - 180.0) < 0.01, "%s 击退 %.0f 像素（实际 %.1f），方向朝外" % [wid, want, got])
+	var ws := BattleSim.new()
+	ws.setup([{"id": 1, "name": "a", "weapon": "spear"}, {"id": 2, "name": "b", "weapon": "dagger"}], rng)
+	(ws.fighters[1] as BattleSim.Fighter).pos = Vector2(BattleSim.ARENA.x - 60, 180)
+	(ws.fighters[2] as BattleSim.Fighter).pos = Vector2(BattleSim.ARENA.x - 30, 180)
+	ws.step(1.0 / 60.0, {1: {"aim": 0.0, "attack": true}})
+	for i in 60:
+		ws.step(1.0 / 60.0, {})
+	check((ws.fighters[2] as BattleSim.Fighter).pos.x <= BattleSim.ARENA.x - BattleSim.MARGIN, "击退不会把人推出场地")
 
 	print("[快照往返]")
 	var s2 := BattleSim.new()

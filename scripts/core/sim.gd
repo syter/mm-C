@@ -5,14 +5,19 @@ extends RefCounted
 ## 服务器跑 step()；客户端只用 apply_snapshot() 接收状态来渲染。
 
 const ARENA: Vector2 = Vector2(640, 360)
+## 尺寸三件套：身体、范围单位、移速是等比绑定的（2026-11-17 统一放大 2 倍）。
+## 要再整体缩放，三个一起乘同一个倍数，武器平衡就不会变；只改其中一个会动到平衡。
+const BODY_R: float = 12.0
 ## 武器 range 的 1 个单位 = 多少像素
-const UNIT_PX: float = 20.0
-## 移动速度 100 = 每秒 120 像素（横穿屏幕约 5 秒）
-const SPEED_PX: float = 1.2
-const BODY_R: float = 6.0
+const UNIT_PX: float = 40.0
+## 移动速度 100 = 每秒 240 像素（横穿屏幕约 2.7 秒）
+const SPEED_PX: float = 2.4
 const BASE_HP: int = 100
-const MARGIN: float = 12.0
+## 场地边界留白，至少要等于身体半径，不然角色会画出屏幕
+const MARGIN: float = BODY_R
 const SWING_SHOW: float = 0.15
+## 击退不是瞬移：剩余击退距离按这个时间常数指数衰减地「滑」出去，约 0.2 秒滑完
+const KB_TAU: float = 0.05
 const HURT_SHOW: float = 0.2
 
 
@@ -29,12 +34,18 @@ class Fighter:
 	var alive: bool = true
 	var kills: int = 0
 	var color_idx: int = 0
+	## 队伍。各自为战时每人一队（= 出场序号）；同队互相打不出伤害
+	var team: int = 0
+	## 还没滑完的击退位移
+	var kb: Vector2 = Vector2.ZERO
 
 
 var fighters: Dictionary = {}  # id -> Fighter
 var time: float = 0.0
 ## 本帧发生的命中：{attacker, target, damage, killed}
 var events: Array[Dictionary] = []
+## 本帧出手的人（不管打没打中），用来放挥击音效
+var swings: Array[int] = []
 
 
 ## entries: [{id, name, weapon}]，按顺序分配颜色和出生点
@@ -51,6 +62,7 @@ func setup(entries: Array, rng: RandomNumberGenerator) -> void:
 		f.name = e["name"]
 		f.weapon = e["weapon"]
 		f.color_idx = i
+		f.team = int(e.get("team", i))
 		var ang: float = base_ang + TAU * i / n
 		# 椭圆分布，贴合 16:9 场地
 		f.pos = center + Vector2(cos(ang) * 230.0, sin(ang) * 120.0)
@@ -68,6 +80,8 @@ func hit_dist(f: Fighter) -> float:
 
 
 func can_hit(a: Fighter, t: Fighter) -> bool:
+	if a.team == t.team:
+		return false  # 不打队友
 	var d: Vector2 = t.pos - a.pos
 	var dist: float = d.length()
 	if dist > hit_dist(a):
@@ -84,6 +98,7 @@ func can_hit(a: Fighter, t: Fighter) -> bool:
 func step(dt: float, inputs: Dictionary) -> void:
 	time += dt
 	events.clear()
+	swings.clear()
 	var attackers: Array[Fighter] = []
 	for f: Fighter in fighters.values():
 		f.swing = maxf(f.swing - dt, 0.0)
@@ -96,6 +111,12 @@ func step(dt: float, inputs: Dictionary) -> void:
 		if mv.length() > 1.0:
 			mv = mv.normalized()
 		f.pos += mv * move_speed(f) * dt
+		if f.kb != Vector2.ZERO:
+			var slide: Vector2 = f.kb * (1.0 - exp(-dt / KB_TAU))
+			f.pos += slide
+			f.kb -= slide
+			if f.kb.length() < 0.2:
+				f.kb = Vector2.ZERO
 		f.pos = f.pos.clamp(Vector2(MARGIN, MARGIN), ARENA - Vector2(MARGIN, MARGIN))
 		f.aim = inp.get("aim", f.aim)
 		if inp.get("attack", false) and f.cd <= 0.0:
@@ -107,11 +128,13 @@ func step(dt: float, inputs: Dictionary) -> void:
 		var w: Dictionary = Weapons.get_def(a.weapon)
 		a.cd = float(w["cooldown"])
 		a.swing = SWING_SHOW
+		swings.append(a.id)
 		for t: Fighter in fighters.values():
 			if t == a or not t.alive:
 				continue
 			if can_hit(a, t):
-				pending.append({"attacker": a.id, "target": t.id, "damage": int(w["damage"])})
+				pending.append({"attacker": a.id, "target": t.id, "damage": int(w["damage"]),
+					"kb": float(w.get("knockback", 0.0)) * UNIT_PX})
 	for p in pending:
 		var t: Fighter = fighters[p["target"]]
 		if not t.alive:
@@ -121,6 +144,12 @@ func step(dt: float, inputs: Dictionary) -> void:
 			continue
 		t.hp = maxi(t.hp - int(p["damage"]), 0)
 		t.hurt = HURT_SHOW
+		# 击退方向：从攻击者指向目标；完全重叠时沿攻击者朝向推
+		var a2: Fighter = fighters[p["attacker"]]
+		var away: Vector2 = t.pos - a2.pos
+		if away.length() < 0.01:
+			away = Vector2.from_angle(a2.aim)
+		t.kb += away.normalized() * float(p["kb"])
 		p["killed"] = false
 		events.append(p)
 	for p in events:
@@ -146,11 +175,20 @@ func alive_count() -> int:
 	return c
 
 
+## 还活着的队伍数
+func alive_teams() -> int:
+	var teams := {}
+	for f: Fighter in fighters.values():
+		if f.alive:
+			teams[f.team] = true
+	return teams.size()
+
+
 func is_over() -> bool:
-	return alive_count() <= 1
+	return alive_teams() <= 1
 
 
-## 胜者 id；同归于尽返回 0（ENet 的 id 从 1 开始，机器人是负数，0 不会撞）
+## 胜者 id（分队模式下是胜队里任意一个活人）；同归于尽返回 0（ENet 的 id 从 1 开始，机器人是负数，0 不会撞）
 func winner_id() -> int:
 	for f: Fighter in fighters.values():
 		if f.alive:
