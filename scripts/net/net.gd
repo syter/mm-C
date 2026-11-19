@@ -16,8 +16,8 @@ signal mode_changed
 signal battle_started
 signal battle_ended(winner_id: int)
 signal net_error(msg: String)
-## 战斗特效/音效事件：swings = [出手者 id]，hits = [{attacker, target, damage, killed}]
-signal fx(swings: Array, hits: Array)
+## 战斗特效/音效事件：swings = [出手者 id]，hits = [{attacker, target, damage, killed}]，catches = [接住回旋镖的人]
+signal fx(swings: Array, hits: Array, catches: Array)
 
 enum Phase { MENU, LOBBY, DRAFT, MODE, BATTLE, RESULT }
 
@@ -421,8 +421,8 @@ func _snapshot(arr: Array) -> void:
 
 
 @rpc("authority", "call_local", "reliable")
-func _fx(swings: Array, hits: Array) -> void:
-	fx.emit(swings, hits)
+func _fx(swings: Array, hits: Array, catches: Array) -> void:
+	fx.emit(swings, hits, catches)
 
 
 @rpc("authority", "call_local", "reliable")
@@ -516,9 +516,9 @@ func _tick_battle(dt: float) -> void:
 		_last_seq[id] = seq
 		inputs[id] = {"move": raw["move"], "aim": raw["aim"], "attack": raw["held"] or clicked}
 	sim.step(dt, inputs)
-	if not sim.swings.is_empty() or not sim.events.is_empty():
+	if not sim.swings.is_empty() or not sim.events.is_empty() or not sim.catches.is_empty():
 		# 音效事件走可靠通道：一秒顶多几次，丢了会很明显（砍到人没声音）
-		_fx.rpc(Array(sim.swings), Array(sim.events))
+		_fx.rpc(Array(sim.swings), Array(sim.events), Array(sim.catches))
 	if _frame % SNAP_EVERY == 0:
 		_snapshot.rpc(sim.snapshot())
 	if sim.is_over():

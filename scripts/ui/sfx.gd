@@ -22,6 +22,7 @@ func _ready() -> void:
 		for kind: String in ["swing", "hit"]:
 			_load("%s_%s" % [wid, kind])
 	_load("kill")
+	_load("boomerang_catch")
 	for i in POOL_SIZE:
 		var p := AudioStreamPlayer2D.new()
 		# 屏幕就 640 宽，衰减要很弱，主要只要左右声像
@@ -54,7 +55,7 @@ func play(sname: String, pos: Vector2, vol_db: float = 0.0) -> void:
 	p.play()
 
 
-func _on_fx(swings: Array, hits: Array) -> void:
+func _on_fx(swings: Array, hits: Array, catches: Array) -> void:
 	var sim: BattleSim = Net.sim
 	if sim == null:
 		return
@@ -71,6 +72,10 @@ func _on_fx(swings: Array, hits: Array) -> void:
 		play(a.weapon + "_hit", t.pos)
 		if h.get("killed", false):
 			play("kill", t.pos, 2.0)
+	for id: int in catches:
+		var c: BattleSim.Fighter = sim.fighters.get(id)
+		if c != null:
+			play("boomerang_catch", c.pos, 0.0 if id == Net.my_id() else -6.0)
 
 
 func stop_all() -> void:

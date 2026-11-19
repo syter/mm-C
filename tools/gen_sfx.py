@@ -7,12 +7,15 @@
 每把武器两个音：
   <武器>_swing  出手（不管打没打中）
   <武器>_hit    砍中人
-外加通用的 kill（击杀）。
+外加通用的 kill（击杀）、回旋镖的 boomerang_catch（接住）。
 
 音色思路（跟武器特点对齐）：
   匕首  短、高、快 —— 细小的"嗖"+ 尖锐的划破声
   长枪  中等 —— 破风声 + 木杆捅进去的闷"噗"
   铁鞭  长、低、沉 —— 重物抡起来的"呼"+ 带链节碰撞的金属"锵"
+  长棍  转一圈的"呼呼"（带旋转的忽强忽弱）+ 实木的"梆"
+  镰刀  带金属"锵——"余韵的破风 + 划破声接一个往回拖的"嘶啦"（拉人）
+  回旋镖 丢出去持续的"嗡嗡"旋转声 + 轻木头"啪" + 接住时手掌"啪嗒"
 以后有了正式音效，直接替换同名 wav 即可，代码不用改。
 """
 import math
@@ -196,6 +199,51 @@ def whip():
     write("whip_hit", mix(gain(clang, 0.55), gain(hit, 0.6), boom), peak=0.85)
 
 
+def am(x, rate, depth):
+    """幅度调制：rate Hz 忽强忽弱 —— 东西在转的感觉"""
+    return [v * (1 - depth + depth * (0.5 + 0.5 * math.sin(2 * math.pi * rate * i / SR))) for i, v in enumerate(x)]
+
+
+def staff():
+    # 出手：低沉的"呼呼"，转一圈带两三次强弱起伏
+    write("staff_swing", am(whoosh(0.30, 300, 900, 1.3, attack=0.3, pow_=1.2), 9.0, 0.7), peak=0.65)
+    # 命中：实木"梆"—— 中低频木头泛音 + 闷击
+    n = 0.18
+    wood = partials(n, [310, 760, 1240], 0.035)
+    thump = mul(sine_sweep(0.12, 150, 80), env_exp(int(SR * 0.12), 0.04))
+    click = mul(highpass(noise(0.015), 2000), env_exp(int(SR * 0.015), 0.003))
+    write("staff_hit", mix(gain(wood, 0.7), thump, gain(click, 0.4)), peak=0.85)
+
+
+def scythe():
+    # 出手：破风 + 刀刃的金属"锵——"余韵
+    base = whoosh(0.2, 1200, 3200, 1.8, attack=0.35, pow_=1.8)
+    ring = gain(partials(0.25, [2350, 3720, 5100], 0.06), 0.18)
+    write("scythe_swing", mix(base, ring), peak=0.6)
+    # 命中：划破 + 往回拖的"嘶啦"（音高往下走的低通噪声），表达"被勾回来"
+    cut = mul(highpass(noise(0.05), 2500), env_exp(int(SR * 0.05), 0.012))
+    drag_n = 0.22
+    drag = mul(bandpass_sweep(noise(drag_n), 1800, 450, 2.5), env_ad(int(SR * drag_n), 0.03, 1.4))
+    hook = mul(partials(0.12, [1650, 2900], 0.03), [1.0] * int(SR * 0.12))
+    write("scythe_hit", mix(cut, delay(gain(drag, 0.9), 0.03), gain(hook, 0.25)), peak=0.8)
+
+
+def boomerang():
+    # 出手：持续的"嗡嗡"旋转声，频率先高后低（飞远了）
+    n = 0.45
+    whirr = am(bandpass_sweep(noise(n), 1400, 700, 3.0), 16.0, 0.85)
+    write("boomerang_swing", mul(whirr, env_ad(int(SR * n), 0.05, 1.0)), peak=0.5)
+    # 命中：轻木头"啪"
+    n2 = 0.1
+    smack = partials(n2, [520, 1380, 2300], 0.02)
+    snap = mul(highpass(noise(0.02), 1500), env_exp(int(SR * 0.02), 0.004))
+    write("boomerang_hit", mix(gain(smack, 0.7), snap), peak=0.75)
+    # 接住：手掌"啪嗒"，短促，提示"可以再丢了"
+    catch = mul(lowpass(noise(0.04), 3000), env_exp(int(SR * 0.04), 0.006))
+    tick = partials(0.05, [900, 1900], 0.01)
+    write("boomerang_catch", mix(catch, gain(tick, 0.4)), peak=0.55)
+
+
 def kill():
     # 击杀：低沉的"咚"+ 往下掉的音，跟命中声叠在一起也分得出来
     n = 0.45
@@ -212,3 +260,7 @@ if __name__ == "__main__":
     spear()
     whip()
     kill()
+    # 新武器放在后面生成：随机数顺序不变，旧音效就不会因为加了新的而变样
+    staff()
+    scythe()
+    boomerang()

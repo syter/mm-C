@@ -100,7 +100,7 @@ func _initialize() -> void:
 	check(ts.is_over() and ts.fighters[ts.winner_id()].team == 0, "敌队全灭：我方队伍获胜（两人都活着也算结束）")
 
 	print("[击退]")
-	for wid: String in Weapons.POOL:
+	for wid: String in ["dagger", "spear", "staff", "whip"]:
 		var ks := BattleSim.new()
 		ks.setup([{"id": 1, "name": "a", "weapon": wid}, {"id": 2, "name": "b", "weapon": "dagger"}], rng)
 		var ka: BattleSim.Fighter = ks.fighters[1]
@@ -124,10 +124,87 @@ func _initialize() -> void:
 		ws.step(1.0 / 60.0, {})
 	check((ws.fighters[2] as BattleSim.Fighter).pos.x <= BattleSim.ARENA.x - BattleSim.MARGIN, "击退不会把人推出场地")
 
+	print("[镰刀：拉人]")
+	var sc := BattleSim.new()
+	sc.setup([{"id": 1, "name": "a", "weapon": "scythe"}, {"id": 2, "name": "b", "weapon": "dagger"}], rng)
+	var sa: BattleSim.Fighter = sc.fighters[1]
+	var sb: BattleSim.Fighter = sc.fighters[2]
+	sa.pos = Vector2(200, 180)
+	sb.pos = Vector2(200 + sc.hit_dist(sa) - 4.0, 180)
+	var d0: float = sa.pos.distance_to(sb.pos)
+	sc.step(1.0 / 60.0, {1: {"aim": 0.0, "attack": true}})
+	for i in 60:
+		sc.step(1.0 / 60.0, {})
+	check(sb.hp == 62, "镰刀一下 38")
+	check(absf((d0 - sa.pos.distance_to(sb.pos)) - BattleSim.UNIT_PX) < 1.0, "把人往自己这边拉 40 像素")
+	sb.pos = Vector2(200 + BattleSim.BODY_R * 2.0 + 10.0, 180)
+	sb.kb = Vector2.ZERO
+	sa.cd = 0.0
+	sc.step(1.0 / 60.0, {1: {"aim": 0.0, "attack": true}})
+	for i in 60:
+		sc.step(1.0 / 60.0, {})
+	check(sb.pos.x >= sa.pos.x + BattleSim.BODY_R * 2.0 - 0.5, "离很近时最多拉到贴身，不会拉穿过去")
+
+	print("[长棍：打一圈]")
+	var st := BattleSim.new()
+	st.setup([{"id": 1, "name": "a", "weapon": "staff"}, {"id": 2, "name": "b", "weapon": "dagger"},
+		{"id": 3, "name": "c", "weapon": "dagger"}], rng)
+	(st.fighters[1] as BattleSim.Fighter).pos = Vector2(300, 180)
+	(st.fighters[2] as BattleSim.Fighter).pos = Vector2(360, 180)  # 前面
+	(st.fighters[3] as BattleSim.Fighter).pos = Vector2(240, 180)  # 背后
+	st.step(1.0 / 60.0, {1: {"aim": 0.0, "attack": true}})
+	check((st.fighters[2] as BattleSim.Fighter).hp == 64 and (st.fighters[3] as BattleSim.Fighter).hp == 64, "前后两个人一起打中")
+
+	print("[回旋镖]")
+	var bs := BattleSim.new()
+	bs.setup([{"id": 1, "name": "a", "weapon": "boomerang", "team": 0}, {"id": 2, "name": "b", "weapon": "dagger", "team": 1},
+		{"id": 3, "name": "c", "weapon": "dagger", "team": 0}], rng)
+	var ba: BattleSim.Fighter = bs.fighters[1]
+	var bb: BattleSim.Fighter = bs.fighters[2]
+	var bc: BattleSim.Fighter = bs.fighters[3]
+	ba.pos = Vector2(150, 180)
+	bb.pos = Vector2(230, 180)  # 在飞行路线上
+	bc.pos = Vector2(200, 180)  # 队友也在路线上
+	check(not bs.can_hit(ba, bb), "回旋镖没有近战判定")
+	bs.step(1.0 / 60.0, {1: {"aim": 0.0, "attack": true}})
+	check(ba.proj_out and bs.projs.size() == 1, "丢出去：手上空了，场上一个回旋镖")
+	bs.step(1.0 / 60.0, {1: {"aim": 0.0, "attack": true}})
+	check(bs.projs.size() == 1, "在天上时不能再丢")
+	var steps: int = 0
+	var hp_mid: int = -1
+	while ba.proj_out and steps < 300:
+		bs.step(1.0 / 60.0, {})
+		steps += 1
+		if bs.projs.size() > 0 and bs.projs[0].back and hp_mid < 0:
+			hp_mid = bb.hp
+	check(hp_mid == 65, "去程打中一下（35）")
+	check(bb.hp == 30, "回程再打中一下：一次最多两下")
+	check(bc.hp == 100, "路线上的队友没事")
+	check(not ba.proj_out and bs.projs.is_empty(), "飞回来接住了（用了 %.2f 秒）" % (steps / 60.0))
+	bs.step(1.0 / 60.0, {})
+	bs.step(1.0 / 60.0, {})
+	bs.step(1.0 / 60.0, {})
+	bs.step(1.0 / 60.0, {})
+	bs.step(1.0 / 60.0, {})
+	bs.step(1.0 / 60.0, {})
+	bs.step(1.0 / 60.0, {})
+	bs.step(1.0 / 60.0, {1: {"aim": 0.0, "attack": true}})
+	check(ba.proj_out, "接住 0.1 秒后能再丢")
+	bs.kill(1)
+	bs.step(1.0 / 60.0, {})
+	check(bs.projs.is_empty(), "主人死了，回旋镖消失")
+
 	print("[快照往返]")
 	var s2 := BattleSim.new()
 	s2.setup([{"id": 1, "name": "a", "weapon": "dagger"}, {"id": 2, "name": "b", "weapon": "dagger"}], rng)
 	s2.apply_snapshot(sim.snapshot())
+	var ps := BattleSim.new()
+	ps.setup([{"id": 1, "name": "a", "weapon": "boomerang"}, {"id": 2, "name": "b", "weapon": "dagger"}], rng)
+	ps.step(1.0 / 60.0, {1: {"aim": 0.0, "attack": true}})
+	var ps2 := BattleSim.new()
+	ps2.setup([{"id": 1, "name": "a", "weapon": "boomerang"}, {"id": 2, "name": "b", "weapon": "dagger"}], rng)
+	ps2.apply_snapshot(ps.snapshot())
+	check(ps2.projs.size() == 1 and ps2.projs[0].pos == ps.projs[0].pos and (ps2.fighters[1] as BattleSim.Fighter).proj_out, "快照带上回旋镖")
 	check((s2.fighters[1] as BattleSim.Fighter).pos == a.pos and not (s2.fighters[2] as BattleSim.Fighter).alive, "快照还原位置和存活")
 
 	_bot_duels(rng)

@@ -295,8 +295,12 @@ func _refresh_draft() -> void:
 		var w: Dictionary = Weapons.get_def(weapons[i])
 		var owner: int = Net.draft["taken"][i]
 		var b := Button.new()
-		b.custom_minimum_size = Vector2(80, 96)
-		var t: String = "%s\n\n范围 %s\n伤害 %d\n速度 %d\n间隔 %ss\n击退 %s" % [w["name"], str(w["range"]), w["damage"], w["speed"], str(w["cooldown"]), str(w["knockback"])]
+		b.custom_minimum_size = Vector2(84, 110)
+		var kbv: float = float(w["knockback"])
+		var cd_txt: String = "飞回再丢" if w.get("projectile", false) else "%ss" % str(w["cooldown"])
+		var kb_txt: String = ("拉 %s" % str(-kbv)) if kbv < 0.0 else str(kbv)
+		var arc_txt: String = "" if w.get("projectile", false) else ("\n角度 一圈" if float(w["arc"]) >= 360.0 else "\n角度 %d°" % int(w["arc"]))
+		var t: String = "%s\n\n范围 %s\n伤害 %d\n速度 %d\n间隔 %s%s\n击退 %s" % [w["name"], str(w["range"]), w["damage"], w["speed"], cd_txt, arc_txt, kb_txt]
 		if owner != 0:
 			t += "\n← " + Net.players.get(owner, {}).get("name", "?")
 		b.text = t

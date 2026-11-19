@@ -76,6 +76,8 @@ func _draw() -> void:
 	fs.sort_custom(func(a: BattleSim.Fighter, b: BattleSim.Fighter) -> bool: return int(a.alive) < int(b.alive))
 	for f: BattleSim.Fighter in fs:
 		_draw_fighter(f)
+	for pr: BattleSim.Proj in Net.sim.projs:
+		_draw_proj(pr)
 
 
 ## 各自为战：每人一个颜色。分队：身体按队伍上色（红队一片红、蓝队一片蓝），队友之间用深浅区分。
@@ -114,14 +116,19 @@ func _draw_fighter(f: BattleSim.Fighter) -> void:
 	# 自己的攻击范围提示（淡）
 	if is_me:
 		draw_arc(p, reach, 0, TAU, 64, Color(1, 1, 1, 0.12), 1.0)
-	# 挥击扇形
-	if f.swing > 0.0:
-		var half: float = deg_to_rad(float(w["arc"])) / 2.0
+	# 挥击范围闪一下（回旋镖是丢出去，不画扇形）
+	if f.swing > 0.0 and not w.get("projectile", false):
 		var a: float = f.swing / BattleSim.SWING_SHOW
-		var pts := PackedVector2Array([p])
-		for i in 13:
-			pts.append(p + Vector2.from_angle(f.aim - half + 2.0 * half * i / 12.0) * reach)
-		draw_colored_polygon(pts, Color(1, 1, 0.85, 0.45 * a))
+		var fx_col := Color(1, 1, 0.85, 0.45 * a)
+		if float(w["arc"]) >= 360.0:
+			draw_circle(p, reach, Color(fx_col, 0.3 * a))  # 长棍：一整圈
+			draw_arc(p, reach, 0, TAU, 64, fx_col, 2.0)
+		else:
+			var half: float = deg_to_rad(float(w["arc"])) / 2.0
+			var pts := PackedVector2Array([p])
+			for i in 13:
+				pts.append(p + Vector2.from_angle(f.aim - half + 2.0 * half * i / 12.0) * reach)
+			draw_colored_polygon(pts, fx_col)
 
 	# 分队模式：脚下画队伍色的圈
 	if Net.match_mode.get("k", 0) > 0:
@@ -139,11 +146,7 @@ func _draw_fighter(f: BattleSim.Fighter) -> void:
 	var look: Vector2 = (Vector2.from_angle(f.aim) * 2.0).round()
 	draw_rect(Rect2(look + Vector2(-3, -2), Vector2(2, 2)), Color(0.1, 0.1, 0.12))
 	draw_rect(Rect2(look + Vector2(1, -2), Vector2(2, 2)), Color(0.1, 0.1, 0.12))
-	# 武器：从身体伸出去的线，长度跟 range 挂钩
-	var wlen: float = 4.0 + float(w["range"]) * 4.0
-	var dir: Vector2 = Vector2.from_angle(f.aim)
-	var st: Vector2 = dir * 7.0
-	draw_line(st, st + dir * wlen, w["color"], 2.0)
+	_draw_weapon(f, w)
 	draw_set_transform(Vector2.ZERO)
 
 	# 血条和名字不跟着放大，只跟着身体高度挪位置
@@ -156,3 +159,51 @@ func _draw_fighter(f: BattleSim.Fighter) -> void:
 	var label: String = ("▼ " if is_me else "") + f.name
 	var tw: float = font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, 8).x
 	draw_string(font, p + Vector2(-tw / 2.0, top - 9), label, HORIZONTAL_ALIGNMENT_LEFT, -1, 8, Color(1, 1, 1, 0.9))
+
+
+## 手上的武器（在 12x12 精灵坐标系里画，外面已经套了放大变换）
+func _draw_weapon(f: BattleSim.Fighter, w: Dictionary) -> void:
+	var wlen: float = 4.0 + float(w["range"]) * 4.0
+	var dir: Vector2 = Vector2.from_angle(f.aim)
+	var col: Color = w["color"]
+	match f.weapon:
+		"staff":
+			# 长棍横握，挥击时转一圈
+			var spin: float = (1.0 - f.swing / BattleSim.SWING_SHOW) * TAU if f.swing > 0.0 else 0.0
+			var d2: Vector2 = Vector2.from_angle(f.aim + PI / 2.0 + spin)
+			draw_line(-d2 * (wlen * 0.6), d2 * (wlen * 0.6), col, 2.0)
+		"scythe":
+			# 长柄 + 刀头往回弯的钩
+			var st: Vector2 = dir * 7.0
+			var tip: Vector2 = st + dir * wlen
+			draw_line(st, tip, Color(0.45, 0.32, 0.2), 1.5)
+			var side: Vector2 = dir.orthogonal()
+			draw_polyline(PackedVector2Array([tip, tip + side * 4.0 - dir * 0.5, tip + side * 7.0 - dir * 3.0, tip + side * 8.0 - dir * 6.0]), col, 2.0)
+		"boomerang":
+			if not f.proj_out:
+				_draw_boomerang_shape(dir * 9.0, f.aim, col, 1.0)
+		_:
+			var st2: Vector2 = dir * 7.0
+			draw_line(st2, st2 + dir * wlen, col, 2.0)
+
+
+## 回旋镖：L 形，两条臂
+func _draw_boomerang_shape(at: Vector2, ang: float, col: Color, scale: float) -> void:
+	var a: Vector2 = Vector2.from_angle(ang + 0.8) * 4.0 * scale
+	var b: Vector2 = Vector2.from_angle(ang - 0.8) * 4.0 * scale
+	draw_line(at, at + a, col, 2.0 * scale)
+	draw_line(at, at + b, col, 2.0 * scale)
+
+
+func _draw_proj(pr: BattleSim.Proj) -> void:
+	var o: BattleSim.Fighter = Net.sim.fighters.get(pr.owner)
+	if o == null:
+		return
+	var col: Color = Weapons.get_def(o.weapon)["color"]
+	var S: float = BattleSim.BODY_R / 6.0
+	# 飞行中一直在转
+	var spin: float = Time.get_ticks_msec() / 1000.0 * 22.0
+	draw_set_transform(pr.pos.round(), 0.0, Vector2(S, S))
+	draw_circle(Vector2(0, 3), 2.5, Color(0, 0, 0, 0.2))  # 影子
+	_draw_boomerang_shape(Vector2.ZERO, spin, col, 1.2)
+	draw_set_transform(Vector2.ZERO)

@@ -36,4 +36,8 @@ static func think(sim: BattleSim, id: int, rng: RandomNumberGenerator) -> Dictio
 	var strafe: Vector2 = dir.orthogonal() * sin(sim.time * 2.0 + float(id)) * 0.6
 	mv = (mv + strafe).limit_length(1.0)
 	var aim: float = to.angle() + rng.randf_range(-0.15, 0.15)
-	return {"move": mv, "aim": aim, "attack": sim.can_hit(me, target)}
+	var attack: bool = sim.can_hit(me, target)
+	if sim.is_proj_weapon(me):
+		# 回旋镖：敌人在飞行距离以内就丢（瞄着当前位置，不预判）
+		attack = best <= my_reach * 0.95
+	return {"move": mv, "aim": aim, "attack": attack}

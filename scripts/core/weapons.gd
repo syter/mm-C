@@ -1,10 +1,14 @@
 class_name Weapons
 extends RefCounted
 
-## 武器表。
-## range / damage / speed 是设计定的数值；
-## cooldown（攻击间隔，秒）也是设计定的；arc（挥击扇形角度）还是占位值 —— 见 DESIGN.md「待定项」。
-## knockback：被打中时往后推多远，单位跟 range 一样（1 = 40 像素）。2026-11-17 定。
+## 武器表。所有数值都是设计定的（2026-11-17）。
+## - range：攻击范围，单位 1 = 40 像素（回旋镖是飞多远）
+## - damage：伤害。所有武器必须落在 34–49 → 任意组合都是 3 下杀（测试锁住）
+## - speed：移速，100 = 基准
+## - cooldown：攻击间隔，秒（回旋镖是「接住后到能再丢」的间隔，真正的节奏由飞行来回决定）
+## - arc：挥击扇形角度；360 = 打一圈（长棍）
+## - knockback：被打中往外推多远，单位同 range；负数 = 往自己这边拉（镰刀）
+## - projectile：飞行道具武器（回旋镖），proj_speed 像素/秒，proj_r 判定半径像素
 const TABLE: Dictionary = {
 	"dagger": {
 		"name": "匕首", "range": 1.0, "damage": 45, "speed": 150,
@@ -12,7 +16,20 @@ const TABLE: Dictionary = {
 	},
 	"spear": {
 		"name": "长枪", "range": 2.0, "damage": 40, "speed": 100,
-		"cooldown": 1.0, "arc": 30.0, "knockback": 1.0, "color": Color(0.80, 0.62, 0.38),
+		"cooldown": 1.0, "arc": 45.0, "knockback": 1.0, "color": Color(0.80, 0.62, 0.38),
+	},
+	"staff": {
+		"name": "长棍", "range": 2.5, "damage": 36, "speed": 100,
+		"cooldown": 1.2, "arc": 360.0, "knockback": 0.75, "color": Color(0.62, 0.45, 0.28),
+	},
+	"scythe": {
+		"name": "镰刀", "range": 3.0, "damage": 38, "speed": 85,
+		"cooldown": 0.8, "arc": 100.0, "knockback": -1.0, "color": Color(0.72, 0.75, 0.80),
+	},
+	"boomerang": {
+		"name": "回旋镖", "range": 3.5, "damage": 35, "speed": 110,
+		"cooldown": 0.1, "arc": 0.0, "knockback": 0.25, "color": Color(0.85, 0.65, 0.30),
+		"projectile": true, "proj_speed": 400.0, "proj_r": 8.0,
 	},
 	"whip": {
 		"name": "铁鞭", "range": 4.0, "damage": 34, "speed": 70,
@@ -21,7 +38,7 @@ const TABLE: Dictionary = {
 }
 
 ## 轮抽时能刷出来的武器（手枪、盾牌之后加）
-const POOL: Array[String] = ["dagger", "spear", "whip"]
+const POOL: Array[String] = ["dagger", "spear", "staff", "scythe", "boomerang", "whip"]
 
 
 static func get_def(id: String) -> Dictionary:
